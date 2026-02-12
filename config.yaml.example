@@ -1,0 +1,42 @@
+server:
+  http_port: ":${HTTP_PORT}"
+  ws_port: ":${WS_PORT}"
+  mode: "${ENVIRONMENT}"
+
+database:
+  host: "${POSTGRES_HOST}"
+  port: ${POSTGRES_PORT}
+  user: "${POSTGRES_USER}"
+  password: "${POSTGRES_PASSWORD}"
+  dbname: "${POSTGRES_DB}"
+  sslmode: "${POSTGRES_SSLMODE}"
+
+redis:
+  addr: "${REDIS_HOST}:${REDIS_PORT}"
+  password: "${REDIS_PASSWORD}"
+  db: ${REDIS_DB}
+
+kafka:
+  brokers:
+    - "${KAFKA_HOST}:${KAFKA_PORT}"
+  topic: "${KAFKA_TOPIC}"
+  group_id: "${KAFKA_GROUP_ID}"
+
+rabbitmq:
+  url: "amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@${RABBITMQ_HOST}:${RABBITMQ_PORT}/"
+  exchange: "${RABBITMQ_EXCHANGE}"
+  queue: "${RABBITMQ_QUEUE}"
+
+jwt:
+  secret: "${JWT_SECRET}"
+  expire_time: ${JWT_EXPIRE_TIME}
+
+ws:
+  read_buffer_size: ${WS_READ_BUFFER_SIZE}
+  write_buffer_size: ${WS_WRITE_BUFFER_SIZE}
+  handshake_timeout: ${WS_HANDSHAKE_TIMEOUT}
+  ping_interval: ${WS_PING_INTERVAL}
+  pong_timeout: ${WS_PONG_TIMEOUT}
+  max_message_size: ${WS_MAX_MESSAGE_SIZE}
+  send_channel_size: ${WS_SEND_CHANNEL_SIZE}
+  max_conn_per_user: ${WS_MAX_CONN_PER_USER}
