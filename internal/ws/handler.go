@@ -28,7 +28,7 @@ func (h *DefaultMessageHandler) HandleMessage(conn *Connection, data []byte) err
 	var msg WSMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		h.logger.Error("unmarshal message error", zap.Error(err))
-		return h.sendError(conn, 400, "invalid message format")
+		return h.sendError(conn, consts.ErrorCode, "invalid message format")
 	}
 
 	h.logger.Debug("received message",
@@ -46,7 +46,7 @@ func (h *DefaultMessageHandler) HandleMessage(conn *Connection, data []byte) err
 	case MessageTypeAck:
 		return h.handleAck(conn, &msg)
 	default:
-		return h.sendError(conn, 400, "invalid message type")
+		return h.sendError(conn, consts.ErrorCode, "invalid message type")
 	}
 }
 
@@ -73,13 +73,13 @@ func (h *DefaultMessageHandler) handlePing(conn *Connection) error {
 func (h *DefaultMessageHandler) handleSubscribe(conn *Connection, msg *WSMessage) error {
 	var payload SubscribePayload
 	if err := msg.ParsePayload(&payload); err != nil {
-		return h.sendError(conn, 400, "invalid subscribe payload")
+		return h.sendError(conn, consts.ErrorCode, "invalid subscribe payload")
 	}
 
 	// 验证主题权限
 	for _, topic := range payload.Topics {
 		if !h.validateTopicPermission(conn, topic) {
-			return h.sendError(conn, 403, "no permission for topic: "+topic)
+			return h.sendError(conn, consts.NotAuthorizedCode, "no permission for topic: "+topic)
 		}
 	}
 
@@ -99,7 +99,7 @@ func (h *DefaultMessageHandler) handleSubscribe(conn *Connection, msg *WSMessage
 func (h *DefaultMessageHandler) handleUnsubscribe(conn *Connection, msg *WSMessage) error {
 	var payload SubscribePayload
 	if err := msg.ParsePayload(&payload); err != nil {
-		return h.sendError(conn, 400, "invalid unsubscribe payload")
+		return h.sendError(conn, consts.ErrorCode, "invalid unsubscribe payload")
 	}
 
 	conn.Unsubscribe(payload.Topics)
@@ -118,7 +118,7 @@ func (h *DefaultMessageHandler) handleUnsubscribe(conn *Connection, msg *WSMessa
 func (h *DefaultMessageHandler) handleAck(conn *Connection, msg *WSMessage) error {
 	var payload AckPayload
 	if err := msg.ParsePayload(&payload); err != nil {
-		return h.sendError(conn, 400, "invalid ack payload")
+		return h.sendError(conn, consts.ErrorCode, "invalid ack payload")
 	}
 
 	h.logger.Info("message acked",
