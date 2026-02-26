@@ -8,7 +8,7 @@ type MessageBroker interface {
 	Publish(ctx context.Context, topic string, message []byte) error
 
 	// Subscribe 订阅消息
-	Subscribe(ctx context.Context, topic string, handler MessageHandler)
+	Subscribe(ctx context.Context, topic string, handler MessageHandler) error
 
 	// Close 关闭连接
 	Close() error
