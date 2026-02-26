@@ -12,6 +12,9 @@ type MessageBroker interface {
 
 	// Close 关闭连接
 	Close() error
+
+	// GetStats 获取统计信息
+	GetStats() *BrokerStats
 }
 
 // MessageHandler 消息处理函数
