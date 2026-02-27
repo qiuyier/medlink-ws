@@ -15,6 +15,16 @@ type MessageBroker interface {
 
 	// GetStats 获取统计信息
 	GetStats() *BrokerStats
+
+	// HealthCheck 健康检查
+	HealthCheck() error
+}
+
+type BrokerStats struct {
+	ActiveWorkers  int32
+	ProcessedCount int64
+	ErrorCount     int64
+	PublishCount   int64
 }
 
 // MessageHandler 消息处理函数

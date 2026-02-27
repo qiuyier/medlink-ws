@@ -82,7 +82,7 @@ func (r *RedisBroker) Publish(ctx context.Context, topic string, message []byte)
 	err := r.client.Publish(ctx, topic, message).Err()
 	if err != nil {
 		atomic.AddInt64(&r.stats.ErrorCount, 1)
-		r.logger.Error("publish message failed",
+		r.logger.Error("redis publish message failed",
 			zap.String("topic", topic),
 			zap.Error(err),
 		)
@@ -211,6 +211,22 @@ func (r *RedisBroker) GetStats() *BrokerStats {
 	}
 }
 
+// HealthCheck 健康检查
+func (r *RedisBroker) HealthCheck() error {
+	if r.closed.Load() {
+		return fmt.Errorf("broker is closed")
+	}
+
+	if r.client == nil {
+		return fmt.Errorf("client is nil")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	return r.client.Ping(ctx).Err()
+}
+
 // 建立连接
 func (r *RedisBroker) connect() error {
 	r.logger.Info("connecting to redis", zap.String("addr", r.addr))
@@ -266,17 +282,6 @@ func (r *RedisBroker) monitorConnection() {
 		}
 
 	}
-}
-
-// 内部订阅
-func (r *RedisBroker) subscribeInternal(topic string, handler MessageHandler) error {
-	if r.client == nil {
-		return fmt.Errorf("redis client is nil")
-	}
-	// 创建 pubsub
-	r.pubsub = r.client.Subscribe(r.ctx, topic)
-
-	return nil
 }
 
 // 启动 worker 池
