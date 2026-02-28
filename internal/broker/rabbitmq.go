@@ -30,15 +30,12 @@ type RabbitMQBroker struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 
+	subscriptionsMu  sync.Mutex
+	subscriptions    map[string]MessageHandler
+	subscribedTopics []string
+
 	// 统计信息
 	stats BrokerStats
-}
-
-type BrokerStats struct {
-	ActiveWorkers  int32
-	ProcessedCount int64
-	ErrorCount     int64
-	PublishCount   int64
 }
 
 func NewRabbitMQBroker(url, exchange, queue string, workerCount int, logger *zap.Logger) (*RabbitMQBroker, error) {
@@ -199,7 +196,30 @@ func (r *RabbitMQBroker) Subscribe(ctx context.Context, topic string, handler Me
 		return fmt.Errorf("broker is closed")
 	}
 
-	// 绑定队列到交换机
+	r.subscriptionsMu.Lock()
+	defer r.subscriptionsMu.Unlock()
+
+	if _, exists := r.subscriptions[topic]; exists {
+		r.logger.Warn("topic already subscribed",
+			zap.String("topic", topic),
+		)
+		r.subscriptions[topic] = handler
+		return nil
+	}
+
+	r.subscriptions[topic] = handler
+	r.subscribedTopics = append(r.subscribedTopics, topic)
+
+	r.logger.Info("subscribing to rabbitmq topic",
+		zap.String("topic", topic),
+		zap.Int("total_topics", len(r.subscribedTopics)),
+	)
+
+	// 绑定队列
+	if r.channels[0] == nil {
+		return fmt.Errorf("channel is nil")
+	}
+
 	err := r.channels[0].QueueBind(
 		r.queue,
 		topic,
@@ -208,72 +228,15 @@ func (r *RabbitMQBroker) Subscribe(ctx context.Context, topic string, handler Me
 		nil,
 	)
 	if err != nil {
-		return fmt.Errorf("bind queue to exchange failed: %w", err)
+		// 回滚
+		delete(r.subscriptions, topic)
+		r.subscribedTopics = r.subscribedTopics[:len(r.subscribedTopics)-1]
+		return fmt.Errorf("queue bind failed: %w", err)
 	}
 
-	r.logger.Info("starting rabbitmq workers",
-		zap.String("topic", topic),
-		zap.Int("worker_count", r.workerCount),
-	)
-
-	// 启动多个 worker goroutine
-	for i := 0; i < r.workerCount; i++ {
-		r.wg.Add(1)
-
-		go func(workerID int, ch *amqp.Channel) {
-			defer r.wg.Done()
-
-			atomic.AddInt32(&r.stats.ActiveWorkers, 1)
-			defer atomic.AddInt32(&r.stats.ActiveWorkers, -1)
-
-			r.logger.Info("worker started",
-				zap.Int("worker_id", workerID),
-				zap.String("topic", topic),
-			)
-
-			// 每个 worker 有自己的消费者
-			msgs, err := ch.Consume(
-				r.queue,
-				fmt.Sprintf("worker-%d-%d", time.Now().Unix(), workerID), // consumer tag（唯一标识）
-				false,
-				false,
-				false,
-				false,
-				nil,
-			)
-			if err != nil {
-				r.logger.Error("worker consume failed",
-					zap.Int("worker_id", workerID),
-					zap.Error(err),
-				)
-				return
-			}
-
-			// 处理消息循环
-			for {
-				select {
-				case <-ctx.Done():
-					r.logger.Info("worker stopping (context cancelled)",
-						zap.Int("worker_id", workerID),
-					)
-					return
-				case <-r.ctx.Done():
-					r.logger.Info("worker stopping (broker closed)",
-						zap.Int("worker_id", workerID),
-					)
-					return
-				case msg, ok := <-msgs:
-					if !ok {
-						r.logger.Warn("worker channel closed",
-							zap.Int("worker_id", workerID),
-						)
-						return
-					}
-
-					r.handleMessageWithAck(workerID, msg, handler)
-				}
-			}
-		}(i, r.channels[i])
+	// 首次订阅,启动 worker
+	if len(r.subscriptions) == 1 {
+		r.startWorkerPool()
 	}
 
 	return nil
@@ -351,8 +314,24 @@ func (r *RabbitMQBroker) Close() error {
 }
 
 // ACK逻辑的消息处理
-func (r *RabbitMQBroker) handleMessageWithAck(workerID int, msg amqp.Delivery, handler MessageHandler) {
+func (r *RabbitMQBroker) handleMessageWithAck(workerID int, msg amqp.Delivery) {
 	start := time.Now()
+
+	routingKey := msg.RoutingKey
+
+	r.subscriptionsMu.Lock()
+	handler, exists := r.subscriptions[routingKey]
+	r.subscriptionsMu.Unlock()
+
+	if !exists {
+		r.logger.Warn("no handler for routing key",
+			zap.Int("worker_id", workerID),
+			zap.String("routing_key", routingKey),
+		)
+		// ACK避免消息堆积
+		_ = msg.Ack(false)
+		return
+	}
 
 	// 记录消息接收
 	r.logger.Debug("worker processing message",
@@ -433,6 +412,32 @@ func (r *RabbitMQBroker) GetStats() *BrokerStats {
 	}
 }
 
+func (r *RabbitMQBroker) HealthCheck() error {
+	if r.closed.Load() {
+		return fmt.Errorf("broker is closed")
+	}
+
+	if r.conn == nil || r.conn.IsClosed() {
+		return fmt.Errorf("connection is closed")
+	}
+
+	if r.publishChannel == nil {
+		return fmt.Errorf("publish channel is nil")
+	}
+
+	// 尝试声明一个临时队列（测试连接）
+	_, err := r.publishChannel.QueueDeclare(
+		"",    // 随机名称
+		false, // durable
+		true,  // delete when unused
+		true,  // exclusive
+		false, // no-wait
+		nil,
+	)
+
+	return err
+}
+
 // 监听连接错误（自动重连，可选）
 func (r *RabbitMQBroker) handleConnectionErrors() {
 	// 监听连接关闭事件
@@ -455,6 +460,62 @@ func (r *RabbitMQBroker) handleConnectionErrors() {
 				zap.String("reason", err.Reason),
 			)
 		}
+	}
+}
+
+// 启动 worker 池
+func (r *RabbitMQBroker) startWorkerPool() {
+	r.logger.Info("starting rabbitmq workers",
+		zap.Int("worker_count", r.workerCount),
+	)
+
+	for i := 0; i < r.workerCount; i++ {
+		if r.channels[i] == nil {
+			r.logger.Error("channel is nil", zap.Int("worker_id", i))
+			continue
+		}
+
+		r.wg.Add(1)
+
+		go func(workerID int, ch *amqp.Channel) {
+			defer r.wg.Done()
+
+			atomic.AddInt32(&r.stats.ActiveWorkers, 1)
+			defer atomic.AddInt32(&r.stats.ActiveWorkers, -1)
+
+			r.logger.Info("rabbitmq worker started", zap.Int("worker_id", workerID))
+
+			msgs, err := ch.Consume(
+				r.queue, // queue
+				fmt.Sprintf("worker-%d-%d", time.Now().Unix(), workerID),
+				false,
+				false,
+				false,
+				false,
+				nil,
+			)
+			if err != nil {
+				r.logger.Error("worker consume failed",
+					zap.Int("worker_id", workerID),
+					zap.Error(err),
+				)
+				return
+			}
+
+			for {
+				select {
+				case <-r.ctx.Done():
+					r.logger.Info("worker stopping", zap.Int("worker_id", workerID))
+					return
+				case msg, ok := <-msgs:
+					if !ok {
+						r.logger.Warn("worker channel closed", zap.Int("worker_id", workerID))
+						return
+					}
+					r.handleMessageWithAck(workerID, msg)
+				}
+			}
+		}(i, r.channels[i])
 	}
 }
 
