@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -20,6 +21,14 @@ const (
 	MessageTypeKickout     = "kickout"
 )
 
+// 广播类型常量
+const (
+	BroadcastTypeAll        = "all"        // 广播给所有人
+	BroadcastTypeDoctors    = "doctors"    // 广播给所有医生
+	BroadcastTypeDepartment = "department" // 广播给指定科室
+	BroadcastTypeUsers      = "users"      // 广播给指定用户
+)
+
 // 业务消息类型
 const (
 	BizTypePrescriptionAudit = "prescription_audit"
@@ -35,6 +44,29 @@ const (
 	PriorityNormal = 2 // 普通（处方审核通过）
 	PriorityLow    = 3 // 低（系统通知）
 )
+
+// BrokerMessage Broker 消息结构（从 MQ 接收的消息）
+type BrokerMessage struct {
+	// 基本信息
+	MsgID    string `json:"msg_id"`   // 消息 ID
+	BizType  string `json:"biz_type"` // 业务类型
+	Priority int    `json:"priority"` // 优先级 (0-3)
+
+	// 单播字段
+	ToUserID string `json:"to_user_id,omitempty"` // 目标用户 ID（单播时必填）
+
+	// 广播字段
+	BroadcastType string   `json:"broadcast_type,omitempty"` // 广播类型：all, doctors, department, users
+	DeptID        string   `json:"dept_id,omitempty"`        // 科室 ID（department 广播时必填）
+	UserIDs       []string `json:"user_ids,omitempty"`       // 用户 ID 列表（users 广播时必填）
+
+	// 消息内容
+	Data json.RawMessage `json:"data"` // 实际业务数据
+
+	// 元数据（可选）
+	FromUserID string `json:"from_user_id,omitempty"` // 发送者 ID
+	Timestamp  int64  `json:"timestamp,omitempty"`    // 时间戳
+}
 
 // WSMessage WebSocket 消息协议
 type WSMessage struct {
@@ -115,4 +147,82 @@ func NewWSMessage(msgType string, payload any) (*WSMessage, error) {
 // ParsePayload 解析载荷
 func (m *WSMessage) ParsePayload(v any) error {
 	return json.Unmarshal(m.Payload, v)
+}
+
+// IsUnicast 判断是否为单播消息
+func (m *BrokerMessage) IsUnicast() bool {
+	return m.ToUserID != "" && m.BroadcastType == ""
+}
+
+// IsBroadcast 判断是否为广播消息
+func (m *BrokerMessage) IsBroadcast() bool {
+	return m.BroadcastType != ""
+}
+
+// Validate 验证消息有效性
+func (m *BrokerMessage) Validate() error {
+	// 验证消息 ID
+	if m.MsgID == "" {
+		return fmt.Errorf("msg_id is required")
+	}
+
+	// 验证业务类型
+	if m.BizType == "" {
+		return fmt.Errorf("biz_type is required")
+	}
+
+	// 验证优先级
+	if m.Priority < PriorityUrgent || m.Priority > PriorityLow {
+		return fmt.Errorf("invalid priority: %d", m.Priority)
+	}
+
+	// 验证数据
+	if len(m.Data) == 0 {
+		return fmt.Errorf("data is required")
+	}
+
+	// 验证收件人
+	if !m.IsUnicast() && !m.IsBroadcast() {
+		return fmt.Errorf("either to_user_id or broadcast_type must be specified")
+	}
+
+	// 验证广播参数
+	if m.IsBroadcast() {
+		switch m.BroadcastType {
+		case BroadcastTypeDepartment:
+			if m.DeptID == "" {
+				return fmt.Errorf("dept_id is required for department broadcast")
+			}
+		case BroadcastTypeUsers:
+			if len(m.UserIDs) == 0 {
+				return fmt.Errorf("user_ids is required for users broadcast")
+			}
+		case BroadcastTypeAll, BroadcastTypeDoctors:
+			// 不需要额外参数
+		default:
+			return fmt.Errorf("invalid broadcast_type: %s", m.BroadcastType)
+		}
+	}
+
+	return nil
+}
+
+// GetRecipientInfo 获取收件人信息（用于日志）
+func (m *BrokerMessage) GetRecipientInfo() string {
+	if m.IsUnicast() {
+		return fmt.Sprintf("user:%s", m.ToUserID)
+	}
+
+	switch m.BroadcastType {
+	case BroadcastTypeAll:
+		return "broadcast:all"
+	case BroadcastTypeDoctors:
+		return "broadcast:doctors"
+	case BroadcastTypeDepartment:
+		return fmt.Sprintf("broadcast:dept:%s", m.DeptID)
+	case BroadcastTypeUsers:
+		return fmt.Sprintf("broadcast:users:%d", len(m.UserIDs))
+	default:
+		return "unknown"
+	}
 }
