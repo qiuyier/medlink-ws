@@ -193,10 +193,28 @@ func (cm *ConnectionManager) BroadcastToDoctors(data []byte) {
 }
 
 // BroadcastToDepartment 广播给指定科室的医生
-func (cm *ConnectionManager) BroadcastToDepartment(deptID string, data []byte) {
-	cm.Broadcast(data, func(conn *Connection) bool {
-		return conn.Role == consts.DoctorRole && conn.DeptID == deptID
+func (cm *ConnectionManager) BroadcastToDepartment(deptID string, data []byte) int {
+	sentCount := 0
+
+	cm.connMap.IterCb(func(userID string, userConns *UserConnections) {
+		userConns.mu.RLock()
+		defer userConns.mu.RUnlock()
+
+		for _, conn := range userConns.Conns {
+			if conn.Role == consts.DoctorRole && conn.DeptID == deptID {
+				if conn.Send(data) {
+					sentCount++
+				}
+			}
+		}
 	})
+
+	cm.logger.Info("broadcast to department",
+		zap.String("dept_id", deptID),
+		zap.Int("sent_count", sentCount),
+	)
+
+	return sentCount
 }
 
 // BroadcastToUsers 广播给指定的多个用户
