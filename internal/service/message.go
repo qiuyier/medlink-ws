@@ -15,6 +15,13 @@ type MessageService struct {
 	logger *zap.Logger
 }
 
+func NewMessageService(db *gorm.DB, logger *zap.Logger) *MessageService {
+	return &MessageService{
+		db:     db,
+		logger: logger,
+	}
+}
+
 // SaveOfflineMessage 保存离线消息
 func (s *MessageService) SaveOfflineMessage(ctx context.Context, userID, msgID string) error {
 	offlineMsg := &model.OfflineMessage{
@@ -34,11 +41,4 @@ func (s *MessageService) SaveOfflineMessage(ctx context.Context, userID, msgID s
 	}
 
 	return nil
-}
-
-func NewMessageService(db *gorm.DB, logger *zap.Logger) *MessageService {
-	return &MessageService{
-		db:     db,
-		logger: logger,
-	}
 }
